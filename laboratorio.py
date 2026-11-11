@@ -170,7 +170,6 @@ elif modo == "lab":
     )
     
     st.title("🧪 Laboratorio de Probabilidad")
-    st.write("*(Ya puedes hacer pruebas. Cierra esta pestaña cuando termines para volver a tus respuestas)*")
     st.markdown("---")
 
     # ==========================================
