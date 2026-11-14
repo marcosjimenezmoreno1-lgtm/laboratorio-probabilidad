@@ -5,6 +5,10 @@ import matplotlib.pyplot as plt
 import math
 import time
 from datetime import datetime
+import io
+from reportlab.lib.pagesizes import A4
+from reportlab.pdfgen import canvas
+from reportlab.lib.utils import simpleSplit
 
 # Configuracion basica
 st.set_page_config(
@@ -13,10 +17,21 @@ st.set_page_config(
     layout="wide"
 )
 
+# --- PARCHE VISUAL PARA MÓVILES ---
+st.markdown(
+    """
+    <style>
+    div[data-testid="InputInstructions"] {
+        display: none !important;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True
+)
+
 # --- Funciones auxiliares sencillas ---
 
 def preparar_grafica(ax):
-    # para que las graficas de matplotlib no queden tan feas por defecto
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
     ax.grid(axis="y", alpha=0.3)
@@ -24,8 +39,6 @@ def preparar_grafica(ax):
 # --------------------------------------------------
 # ENRUTAMIENTO (Navegación entre pestañas)
 # --------------------------------------------------
-# Lo vi en un tutorial: leemos un parámetro de la URL para saber qué mostrar.
-# Así podemos poner un enlace HTML con target="_blank" para abrir una pestaña nueva.
 modo = st.query_params.get("modo", "actividades")
 
 if modo == "actividades":
@@ -33,11 +46,10 @@ if modo == "actividades":
     st.title("📚 Actividades de probabilidad")
     st.write("Resuelve estas actividades. Necesitarás usar el simulador para contestar.")
     
-    # Botón casero hecho con HTML para forzar la apertura en otra pestaña
     st.markdown(
         """
         <a href="?modo=lab" target="_blank" style="display: inline-block; padding: 12px 20px; background-color: #4C72B0; color: white; text-decoration: none; border-radius: 8px; font-weight: bold; margin-bottom: 20px;">
-            🚀 Abrir el Laboratorio en una pestaña nueva
+            Abrir el Laboratorio en una pestaña nueva ↗️
         </a>
         """, 
         unsafe_allow_html=True
@@ -119,29 +131,28 @@ if modo == "actividades":
         }
     ]
 
-    # Para que si escriben algo no se pierda la sesión
-    def marcar_cambio():
-        st.session_state["cambios"] = True
+    # --- ENVOLVEMOS TODO EN UN FORMULARIO ---
+    with st.form("formulario_respuestas"):
+        for i, act in enumerate(actividades):
+            with st.expander(act["titulo"], expanded=True):
+                st.write(act["descripcion"]) 
+                for j, preg in enumerate(act["preguntas"]):
+                    st.write(f"**{j+1}.** {preg}")
+                    st.text_area("Respuesta:", key=f"resp_{i}_{j}")
 
-    # Generamos los campos de texto
-    for i, act in enumerate(actividades):
-        with st.expander(act["titulo"], expanded=True):
-            st.write(act["descripcion"]) 
-            for j, preg in enumerate(act["preguntas"]):
-                st.write(f"**{j+1}.** {preg}")
-                st.text_area("Respuesta:", key=f"resp_{i}_{j}", on_change=marcar_cambio)
+        st.markdown("---")
+        st.subheader("Guardar respuestas")
+        
+        col1, col2 = st.columns(2)
+        nombre = col1.text_input("Tu nombre completo:")
+        curso = col2.text_input("Curso:")
 
-    st.markdown("---")
-    st.subheader("Guardar respuestas")
-    
-    col1, col2 = st.columns(2)
-    nombre = col1.text_input("Tu nombre completo:")
-    curso = col2.text_input("Curso:")
+        submit_btn = st.form_submit_button("Generar PDF para entregar", type="primary")
 
-    if st.button("Generar archivo para entregar", type="primary"):
-        # montamos el texto a mano, sin librerias raras
+    if submit_btn:
+        # 1. Montamos el texto base
         texto_final = f"ALUMNO: {nombre}\nCURSO: {curso}\nFECHA: {datetime.now().strftime('%d/%m/%Y')}\n\n"
-        texto_final += "="*40 + "\nRESPUESTAS\n" + "="*40 + "\n\n"
+        texto_final += "="*50 + "\nRESPUESTAS DEL LABORATORIO\n" + "="*50 + "\n\n"
         
         for i, act in enumerate(actividades):
             texto_final += f"--- {act['titulo'].upper()} ---\n"
@@ -149,12 +160,44 @@ if modo == "actividades":
                 respuesta = st.session_state.get(f"resp_{i}_{j}", "(Sin responder)")
                 texto_final += f"P: {preg}\nR: {respuesta}\n\n"
         
-        st.success("¡Archivo generado! Pulsa abajo para descargar.")
+        # 2. Generamos el archivo PDF en memoria
+        buffer = io.BytesIO()
+        c = canvas.Canvas(buffer, pagesize=A4)
+        c.setFont("Helvetica", 11)
+        
+        ancho_maximo = 450 # Para que el texto no se salga por la derecha
+        y_pos = 800        # Empezamos arriba de la hoja
+        
+        for linea in texto_final.split('\n'):
+            # ReportLab necesita que dividamos las líneas largas manualmente
+            lineas_rotas = simpleSplit(linea, "Helvetica", 11, ancho_maximo)
+            if not lineas_rotas:
+                y_pos -= 15 # Salto de línea si está vacío
+            
+            for trozo in lineas_rotas:
+                if y_pos < 50: # Si llegamos al final de la página, creamos una nueva
+                    c.showPage()
+                    c.setFont("Helvetica", 11)
+                    y_pos = 800
+                c.drawString(50, y_pos, trozo)
+                y_pos -= 15
+        
+        c.save()
+        pdf_bytes = buffer.getvalue()
+        
+        # 3. Guardamos los bytes del PDF en session_state
+        st.session_state["pdf_generado"] = pdf_bytes
+        st.session_state["archivo_listo"] = True
+
+    # El botón de descarga sirve el PDF
+    if st.session_state.get("archivo_listo"):
+        st.success("¡Archivo PDF generado con éxito! Pulsa abajo para descargar.")
+        nombre_limpio = nombre.replace(' ', '_') if nombre else "Alumno"
         st.download_button(
-            label="Descargar mis respuestas (.txt)",
-            data=texto_final,
-            file_name=f"Practica_Probabilidad_{nombre.replace(' ', '_')}.txt",
-            mime="text/plain"
+            label="📥 Descargar mis respuestas (.pdf)",
+            data=st.session_state["pdf_generado"],
+            file_name=f"Practica_Probabilidad_{nombre_limpio}.pdf",
+            mime="application/pdf"
         )
 
 
@@ -184,15 +227,13 @@ elif modo == "lab":
         
         if st.button("Lanzar moneda"):
             with st.spinner('Lanzando...'):
-                time.sleep(0.8) # para darle un toque de que está "pensando"
+                time.sleep(0.8)
                 
-                # Simulamos con distribucion binomial
                 resultados = np.random.binomial(1, prob_cara / 100, size=n_lanzamientos)
                 caras = int(np.sum(resultados))
                 cruces = n_lanzamientos - caras
                 
                 frecuencia_rel = caras / n_lanzamientos
-                # para la grafica de lineas
                 acumuladas = np.cumsum(resultados) / np.arange(1, n_lanzamientos + 1)
                 
                 st.success(f"¡Experimento completado! Se han lanzado {n_lanzamientos} monedas.")
@@ -228,11 +269,9 @@ elif modo == "lab":
             with st.spinner('Lanzando dados...'):
                 time.sleep(0.8)
                 
-                # Generamos matriz de tiradas (filas=simulaciones, columnas=num_dados)
                 tiradas = np.random.randint(1, 7, size=(simulaciones, num_dados))
                 sumas = np.sum(tiradas, axis=1)
                 
-                # Calculo teorico usando convolucion (lo vi en un foro de mates en python, sirve para n dados)
                 dist_teorica = np.array([1.0])
                 for _ in range(num_dados):
                     dist_teorica = np.convolve(dist_teorica, np.ones(6) / 6)
@@ -258,11 +297,10 @@ elif modo == "lab":
                 
                 st.pyplot(fig)
                 
-                # Tabla resumen
                 st.write("**Tabla comparativa:**")
                 df = pd.DataFrame({
                     "Suma": valores_posibles,
-                    "Frecuencia Abs": frec_absolutas,
+                    "Frecuencia Absoluta": frec_absolutas,
                     "Frecuencia Relativa": frec_relativas,
                     "Probabilidad Teórica": dist_teorica
                 })
@@ -294,12 +332,9 @@ elif modo == "lab":
                 if "Con reemplazamiento" in reemplazo:
                     prob_roja = rojas / total
                     resultados = np.random.binomial(extracciones, prob_roja, size=num_experimentos)
-                    # teorica: formula binomial
                     prob_teoricas = [math.comb(extracciones, r) * (prob_roja**r) * ((1-prob_roja)**(extracciones-r)) for r in range(extracciones + 1)]
                 else:
-                    # hipergeometrica para sin reemplazo
                     resultados = np.random.hypergeometric(ngood=rojas, nbad=azules, nsample=extracciones, size=num_experimentos)
-                    # teorica hipergeometrica
                     prob_teoricas = []
                     for r in range(extracciones + 1):
                         if r <= rojas and (extracciones-r) <= azules:
@@ -329,11 +364,10 @@ elif modo == "lab":
                 
                 st.pyplot(fig)
                 
-                # Tabla resumen para las bolas
                 st.write("**Tabla comparativa:**")
                 df_bolas = pd.DataFrame({
                     "Bolas Rojas Sacadas": x,
-                    "Frecuencia Abs": frec_absolutas,
+                    "Frecuencia Absoluta": frec_absolutas,
                     "Frecuencia Relativa": frec_relativas,
                     "Probabilidad Teórica": prob_teoricas
                 })
